@@ -1,7 +1,11 @@
 # All the imports go here
+import os
+import urllib.request
 import cv2
 import numpy as np
 import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 from collections import deque
 
 
@@ -25,7 +29,7 @@ colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (0, 255, 255)]
 colorIndex = 0
 
 # Here is code for Canvas setup
-paintWindow = np.zeros((471,636,3)) + 255
+paintWindow = np.zeros((471,636,3), dtype=np.uint8) + 255
 paintWindow = cv2.rectangle(paintWindow, (40,1), (140,65), (0,0,0), 2)
 paintWindow = cv2.rectangle(paintWindow, (160,1), (255,65), (255,0,0), 2)
 paintWindow = cv2.rectangle(paintWindow, (275,1), (370,65), (0,255,0), 2)
@@ -40,10 +44,40 @@ cv2.putText(paintWindow, "YELLOW", (520, 33), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,
 cv2.namedWindow('Paint', cv2.WINDOW_AUTOSIZE)
 
 
-# initialize mediapipe
-mpHands = mp.solutions.hands
-hands = mpHands.Hands(max_num_hands=1, min_detection_confidence=0.7)
-mpDraw = mp.solutions.drawing_utils
+# initialize mediapipe HandLandmarker
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'hand_landmarker.task')
+if not os.path.exists(MODEL_PATH):
+    print("Downloading hand_landmarker.task model...")
+    urllib.request.urlretrieve(
+        "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+        MODEL_PATH
+    )
+
+base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
+options = vision.HandLandmarkerOptions(
+    base_options=base_options,
+    num_hands=1,
+    min_hand_detection_confidence=0.7
+)
+landmarker = vision.HandLandmarker.create_from_options(options)
+
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),        # Thumb
+    (0, 5), (5, 6), (6, 7), (7, 8),        # Index finger
+    (5, 9), (9, 10), (10, 11), (11, 12),   # Middle finger
+    (9, 13), (13, 14), (14, 15), (15, 16), # Ring finger
+    (13, 17), (0, 17), (17, 18), (18, 19), (19, 20) # Pinky
+]
+
+def draw_hand_landmarks(img, landmarks):
+    h, w, _ = img.shape
+    for start_idx, end_idx in HAND_CONNECTIONS:
+        pt1 = (int(landmarks[start_idx].x * w), int(landmarks[start_idx].y * h))
+        pt2 = (int(landmarks[end_idx].x * w), int(landmarks[end_idx].y * h))
+        cv2.line(img, pt1, pt2, (255, 255, 255), 2)
+    for lm in landmarks:
+        pt = (int(lm.x * w), int(lm.y * h))
+        cv2.circle(img, pt, 4, (0, 0, 255), -1)
 
 
 # Initialize the webcam
@@ -52,6 +86,8 @@ ret = True
 while ret:
     # Read each frame from the webcam
     ret, frame = cap.read()
+    if not ret:
+        break
 
     x, y, c = frame.shape
 
@@ -73,13 +109,14 @@ while ret:
     #frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
     # Get hand landmark prediction
-    result = hands.process(framergb)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=framergb)
+    result = landmarker.detect(mp_image)
 
     # post process the result
-    if result.multi_hand_landmarks:
+    if result.hand_landmarks:
         landmarks = []
-        for handslms in result.multi_hand_landmarks:
-            for lm in handslms.landmark:
+        for handslms in result.hand_landmarks:
+            for lm in handslms:
                 # # print(id, lm)
                 # print(lm.x)
                 # print(lm.y)
@@ -88,9 +125,8 @@ while ret:
 
                 landmarks.append([lmx, lmy])
 
-
             # Drawing landmarks on frames
-            mpDraw.draw_landmarks(frame, handslms, mpHands.HAND_CONNECTIONS)
+            draw_hand_landmarks(frame, handslms)
         fore_finger = (landmarks[8][0],landmarks[8][1])
         center = fore_finger
         thumb = (landmarks[4][0],landmarks[4][1])
@@ -170,4 +206,5 @@ while ret:
 
 # release the webcam and destroy all active windows
 cap.release()
+landmarker.close()
 cv2.destroyAllWindows()
